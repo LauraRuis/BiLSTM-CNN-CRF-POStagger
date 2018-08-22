@@ -1,0 +1,8 @@
+Stanford CONLL 17 data
+
+Source: https://nlp.stanford.edu/data/CoNLL17_Parser_Models/English/English-Tagger/
+
+Dozat & Manning (2017) performance without character-level word embeddings:
+84.28 UAS / 81.80 LAS
+
+(according to the official evaluation metric)

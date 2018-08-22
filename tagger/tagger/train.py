@@ -223,7 +223,7 @@ def train(mode='train', train_path='train.conllx', model='dozat',
   upos_var, morph_var = None, None
   for iter_i in range(start_iter, n_iters + 1):
 
-    if not plateau and iter_i % (912344 / batch_size) == 0:
+    if not plateau and iter_i % (912344 // batch_size) == 0:
       scheduler.step()
     model.train()
 

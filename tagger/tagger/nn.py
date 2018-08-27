@@ -6,6 +6,8 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 from tagger.lstm import LSTM
 from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence, pack_padded_sequence
+from tagger.utils import ROOT_TOKEN, START_TOKEN, END_TOKEN, PAD_TOKEN, log_sum_exp, logsumexp, viterbi_decode
+from typing import List, Tuple, Dict
 
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
@@ -71,11 +73,11 @@ class CharModel(nn.Module):
     lengths = lengths.view(batch_size * seq_len)
     sorted_lengths, sort_idx = torch.sort(lengths, dim=0, descending=True)
     sort_idx = sort_idx.cuda() if torch.cuda.is_available() else sort_idx
-    char_input = char_input.index_select(0, sort_idx)
+    sorted_char_input = char_input.index_select(0, sort_idx)
 
     # get only non padding sequences (namely remove all sequences with length 0 coming from sentence padding)
     non_padding_idx = (sorted_lengths != 0).long().sum()
-    char_input_no_pad = char_input[:non_padding_idx]
+    char_input_no_pad = sorted_char_input[:non_padding_idx]
     sorted_lengths_no_pad = sorted_lengths[:non_padding_idx]
 
     # embed chars
@@ -94,12 +96,12 @@ class CharModel(nn.Module):
 
     # put back in right order
     odx = torch.unsqueeze(sort_idx, 1).expand(sort_idx.size(0), dim)
-    empty_out = torch.zeros(batch_size * seq_len, dim)
-    empty_out = empty_out.cuda() if torch.cuda.is_available() else empty_out
-    output = empty_out.scatter_(0, odx, output)
-    output = output.view(batch_size, seq_len, dim)
+    unsorted_out = torch.zeros(batch_size * seq_len, dim)
+    unsorted_out = unsorted_out.cuda() if torch.cuda.is_available() else unsorted_out
+    unsorted_out = unsorted_out.scatter_(0, odx, output)
+    unsorted_out = unsorted_out.view(batch_size, seq_len, dim)
 
-    return output, lengths
+    return unsorted_out, lengths
 
   def char_model(self, embedded=None, char_input_no_pad=None, lengths=None):
     raise NotImplementedError
@@ -201,15 +203,25 @@ class CharCNN(CharModel):
   def __init__(self, n_chars, padding_idx, emb_dim, num_filters, window_size, dropout_p):
 
     super(CharCNN, self).__init__(n_chars, padding_idx, emb_dim=emb_dim, hidden_size=400, output_dim=100,
-                                  dropout_p=0.33, bi=False)
+                                  dropout_p=dropout_p, bi=False)
 
-    self.conv = nn.Conv1d(100, num_filters, window_size, padding=window_size - 1)
+    self.conv = nn.Conv1d(emb_dim, num_filters, window_size, padding=window_size - 1)
+    self.xavier_uniform()
+
+  def xavier_uniform(self, gain=1.):
+
+    # default pytorch initialization
+    for name, weight in self.conv.named_parameters():
+      if len(weight.size()) > 1:
+          nn.init.xavier_uniform_(weight.data, gain=gain)
+      elif "bias" in name:
+        weight.data.fill_(0.)
 
   def char_model(self, embedded=None, char_input_no_pad=None, lengths=None):
 
     embedded = torch.transpose(embedded, 1, 2)  # (bsz, dim, time)
-    chars = self.conv(embedded)
-    chars = F.max_pool1d(chars, kernel_size=chars.size(2)).squeeze(2)
+    chars_conv = self.conv(embedded)
+    chars = F.max_pool1d(chars_conv, kernel_size=chars_conv.size(2)).squeeze(2)
 
     return chars
 
@@ -373,3 +385,274 @@ class Tagger(nn.Module):
     scores = F.log_softmax(scores, dim=2)
 
     return scores
+
+
+class ChainCRF(nn.Module):
+
+    def __init__(self, n_tags, tag_to_ix):
+        super(ChainCRF, self).__init__()
+
+        self.tag_to_ix = tag_to_ix
+        self.tagset_size = n_tags
+
+        # Matrix of transition parameters.  Entry i,j is the score of
+        # transitioning *to* i *from* j.
+        self.log_transitions = nn.Parameter(torch.randn(self.tagset_size, self.tagset_size))
+
+        self.xavier_uniform()
+
+        # These two statements enforce the constraint that we never transfer
+        # to the start tag and we never transfer from the stop tag
+        self.log_transitions.data[:, tag_to_ix[ROOT_TOKEN]] = -10000.
+        self.log_transitions.data[tag_to_ix[END_TOKEN], :] = -10000.
+
+    def xavier_uniform(self, gain=1.):
+        torch.nn.init.xavier_normal_(self.log_transitions)
+
+    def _select_from_matrix(self, matrix, rows=None, cols=None):
+        bsz = rows.size(0)
+        selection = (
+                    matrix
+                    # Choose the current_tag-th row for each input
+                    .gather(1, rows.view(bsz, 1, 1).expand(bsz, 1, self.tagset_size))
+                    # Squeeze down to (batch_size, num_tags)
+                    .squeeze(1)
+                    # Then choose the next_tag-th column for each of those
+                    .gather(1, cols.view(bsz, 1))
+                    # And squeeze down to (batch_size,)
+                    .squeeze(1)
+            )
+        return selection
+
+    def _forward_belief_prop_logspace(self, feats, mask):
+
+        bsz, max_time, dim = feats.size()
+
+        # initialize the recursion variables with transitions from root token + first emission probabilities
+        init_alphas = self.log_transitions[self.tag_to_ix[ROOT_TOKEN], :] + feats[:, 0, :]
+
+        # set recursion variable
+        forward_var = init_alphas
+
+        # make time major
+        feats = torch.transpose(feats, 0, 1)  # (time, batch_size, dim)
+        mask = torch.transpose(mask.float(), 0, 1)  # (time, batch_size)
+
+        # loop over sequence and calculate the transition probability for the next tag at each step (from t-1 to t)
+        # current tag at t - 1, next tag at t
+        # emission probabilities: (example, next tag)
+        # transition probabilities: (current tag, next tag)
+        # forward var: (instance, current tag)
+        # next tag var: (instance, current tag, next tag)
+        for t in range(1, max_time):
+
+            # get emission scores for this time step
+            feat = feats[t]
+
+            # broadcast emission probabilities
+            emit_scores = feat.view(bsz, self.tagset_size).unsqueeze(1)
+
+            # calculate transition probabilities (broadcast over example axis, same for all examples in batch)
+            trans_scores = self.log_transitions.unsqueeze(0)
+
+            # calculate next tag probabilities
+            next_tag_var = forward_var.unsqueeze(2) + emit_scores + trans_scores
+
+            # calculate next forward var by taking logsumexp over next tag axis, mask all instances that ended
+            # and keep old forward var for instances those
+            forward_var = (logsumexp(next_tag_var, 1) * mask[t].view(bsz, 1) +
+                           forward_var * (1 - mask[t]).view(bsz, 1))
+
+        final_transitions = self.log_transitions[:, self.tag_to_ix[END_TOKEN]]
+
+        alphas = forward_var + final_transitions.unsqueeze(0)
+        partition_function = logsumexp(alphas)
+
+        return partition_function
+
+    def _score_sentence_logspace(self, feats, tags, mask):
+
+        bsz, max_time, dim = feats.size()
+
+        # make time major
+        feats = feats.transpose(0, 1)  # (time, batch_size, dim)
+        mask = mask.float().transpose(0, 1)  # (time, batch_size)
+        tags = tags.transpose(0, 1)  # (time, batch_size)
+
+        # expand transitions for each example in bach
+        transitions = self.log_transitions.view(
+            1, self.tagset_size, self.tagset_size).expand(
+            bsz, self.tagset_size, self.tagset_size)
+
+        # get tensor of root tokens and tensor of next tags (first tags)
+        root_tags = torch.LongTensor([self.tag_to_ix[ROOT_TOKEN]] * bsz).unsqueeze(1)
+        root_tags = root_tags.cuda() if torch.cuda.is_available() else root_tags
+        next_tags = tags[0]
+
+        # initial transition is from root token to first tags
+        initial_transition = self._select_from_matrix(transitions, rows=root_tags, cols=next_tags)
+
+        # initialize scores
+        scores = initial_transition
+
+        # loop over time and add each time calculate the score from t to t + 1
+        for t in range(max_time - 1):
+
+            # get emission scores, transition scores and calculate score for current time step
+            feat = feats[t]
+            next_tags = tags[t + 1]
+            current_tags = tags[t]
+            emis = torch.gather(feat, 1, current_tags.unsqueeze(1)).squeeze()
+            trans = self._select_from_matrix(transitions, rows=current_tags, cols=next_tags)
+
+            # add scores
+            scores = scores + trans * mask[t + 1] + emis * mask[t]
+
+        # add scores for transitioning to stop tag
+        last_tag_index = mask.sum(0).long() - 1
+        last_tags = torch.gather(tags, 0, last_tag_index.view(1, bsz)).view(-1, 1)  # TODO: add this line to AllenNLP
+
+        # end_tags
+        end_tags = torch.LongTensor([self.tag_to_ix[END_TOKEN]] * bsz).unsqueeze(1)
+        end_tags = end_tags.cuda() if torch.cuda.is_available() else end_tags
+
+        last_transition = self._select_from_matrix(transitions, rows=last_tags, cols=end_tags)
+
+        # add the last input if its not masked
+        last_inputs = feats[-1]
+        last_input_score = last_inputs.gather(1, last_tags.view(-1, 1))
+        last_input_score = last_input_score.squeeze()
+
+        scores = scores + last_transition + last_input_score * mask[-1]
+
+        # sum over sequence length
+        return scores
+
+    def _viterbi_decode(self, feats, lengths):
+
+        # initialize the viterbi variables in log space
+        init_vvars = torch.full((1, self.tagset_size), -10000.)
+        init_vvars[0][self.tag_to_ix[ROOT_TOKEN]] = 0
+
+        bsz, max_time, dim = feats.size()
+
+        # initialize list to keep track of backpointers
+        backpointers = torch.zeros(bsz, max_time, self.tagset_size).long() - 1
+        backpointers = backpointers.cuda() if torch.cuda.is_available() else backpointers
+        best_last_tags = []
+        best_path_scores = []
+
+        # forward_var at step i holds the viterbi variables for step i-1
+        forward_var = init_vvars.unsqueeze(0).repeat(bsz, 1, 1)
+        forward_var = forward_var.cuda() if torch.cuda.is_available() else forward_var
+        counter = bsz
+
+        for t in range(max_time):
+
+            ending = (lengths == t).nonzero()
+            n_ending = len(ending)
+
+            if n_ending > 0:
+
+                forward_ending = forward_var[(counter - n_ending):counter]
+                counter -= n_ending
+
+                # transition to STOP_TAG
+                terminal_var = forward_ending + self.log_transitions[:, self.tag_to_ix[END_TOKEN]].unsqueeze(0)
+                path_scores, best_tag_idx = torch.max(terminal_var, 1)
+
+                for tag, score in zip(reversed(list(best_tag_idx)), reversed(list(path_scores))):
+                    best_last_tags.append(tag)
+                    best_path_scores.append(score)
+
+            feat = feats[:, t, :].view(bsz, self.tagset_size)
+
+            # calculate scores of next tag per tag
+            forward_var = forward_var.view(bsz, self.tagset_size, 1)
+            trans_scores = self.log_transitions.unsqueeze(0)
+            next_tag_vars = forward_var + trans_scores
+
+            # get best next tags and viterbi vars
+            viterbivars_t, idx = torch.max(next_tag_vars, 1)
+            best_tag_ids = idx.view(bsz, -1)
+
+            # add emission scores and assign forward_var to the set
+            # of viterbi variables we just computed
+            forward_var = (viterbivars_t + feat).view(bsz, -1)
+            backpointers[:, t, :] = best_tag_ids.long()
+
+        ending = (lengths == max_time).nonzero()
+        ending = ending.cuda() if torch.cuda.is_available() else ending
+        n_ending = len(ending)
+
+        if n_ending > 0:
+
+            forward_ending = forward_var[(counter - n_ending):counter]
+
+            # transition to STOP_TAG
+            terminal_var = forward_ending + self.log_transitions[:, self.tag_to_ix[END_TOKEN]].unsqueeze(0)
+            path_scores, best_tag_idx = torch.max(terminal_var, 1)
+
+            for tag, score in zip(reversed(list(best_tag_idx)), reversed(list(path_scores))):
+                best_last_tags.append(tag)
+                best_path_scores.append(score)
+
+        best_last_tags = torch.LongTensor(list(reversed(best_last_tags)))
+        best_last_tags = best_last_tags.cuda() if torch.cuda.is_available() else best_last_tags
+        best_path_scores = torch.LongTensor(list(reversed(best_path_scores)))
+        best_path_scores = best_path_scores.cuda() if torch.cuda.is_available() else best_path_scores
+
+        # follow the back pointers to decode the best path
+        best_paths = torch.zeros(bsz, max_time + 1).long()
+        best_paths = best_paths.cuda() if torch.cuda.is_available() else best_paths
+        best_paths = best_paths.index_put_((torch.LongTensor([i for i in range(backpointers.size(0))]), lengths),
+                                            best_last_tags)
+        num_active = 0
+        for t in range(max_time - 1, -1, -1):
+
+            starting = (lengths - 1 == t).nonzero()
+            n_starting = len(starting)
+
+            if n_starting > 0:
+                if t == max_time - 1:
+                    best_tag_id = best_paths[num_active:num_active + n_starting, t + 1]
+                else:
+                    last_tags = best_paths[num_active:num_active + n_starting, t + 1]
+                    best_tag_id = torch.cat((best_tag_id, last_tags.unsqueeze(1)), dim=0)
+                num_active += n_starting
+            active = backpointers[:num_active, t]
+
+            best_tag_id = best_tag_id.view(num_active, 1)
+            best_tag_id = torch.gather(active, 1, best_tag_id)
+            best_paths[:num_active, t] = best_tag_id.squeeze()
+
+        end_token_tensor = torch.zeros(bsz).unsqueeze(1).long()
+        end_token_tensor = end_token_tensor.cuda() if torch.cuda.is_available() else end_token_tensor
+        best_paths = torch.cat((best_paths, end_token_tensor), dim=1)
+        end_token = torch.LongTensor([self.tag_to_ix[END_TOKEN]])[0]
+        end_token = end_token.cuda() if torch.cuda.is_available() else end_token
+        best_paths = best_paths.index_put_((torch.LongTensor([i for i in range(best_paths.size(0))]), lengths + 1),
+                                           end_token)
+
+        # pop off the start tag (we dont want to return that to the caller)
+        assert best_paths[:, 0].sum().item() == best_paths.size(0) * self.tag_to_ix[ROOT_TOKEN]
+
+        return best_path_scores, best_paths
+
+    def neg_log_likelihood(self, feats, tags, mask):
+        forward_score = self._forward_belief_prop_logspace(feats, mask)
+        gold_score = self._score_sentence_logspace(feats, tags, mask)
+        return forward_score - gold_score
+
+    def forward(self, lstm_feats, tags, mask, lengths, training=True):
+
+        if training:
+          loss = self.neg_log_likelihood(lstm_feats, tags, mask)
+          with torch.no_grad():
+              score, tag_seq = self._viterbi_decode(lstm_feats, lengths)
+          loss = loss.sum()
+        else:
+          loss = None
+          score, tag_seq = self._viterbi_decode(lstm_feats, lengths)
+
+        return loss, score, tag_seq

@@ -1,10 +1,12 @@
 import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tagger.encoder import RecurrentEncoder
 from tagger.utils import PAD_TOKEN, ROOT_TOKEN, END_TOKEN
-from tagger.nn import ChainCRF
+from tagger.nn import ChainCRF, ChainCRFallenNLP
+from AllenNLPCRF import ConditionalRandomField
 
 use_cuda = True if torch.cuda.is_available() else False
 logger = logging.getLogger(__name__)
@@ -54,8 +56,10 @@ class Tagger(nn.Module):
     self.tagger = tagger
 
     if tagger == "crf":
-      self.tag_model = ChainCRF(n_tags, self.pos_vocab.stoi)
+      self.tag_model_1 = ChainCRFallenNLP(n_tags, self.pos_vocab.stoi, self.tagger_input_dim)
       self.hid2tag = nn.Linear(self.tagger_input_dim, n_tags)
+
+      # self.tag_model = ConditionalRandomField(n_tags, include_start_end_transitions=True)
       self.xavier_uniform()
     elif tagger == "linear":
       self.tag_model = nn.Linear(self.tagger_input_dim, n_tags)
@@ -64,11 +68,15 @@ class Tagger(nn.Module):
   def xavier_uniform(self, gain=1.):
 
     # default pytorch initialization
-    for name, weight in self.hid2tag.named_parameters():
+    for name, weight in self.hid2tag.named_parameters():  # TODO: change back to self.
       if len(weight.size()) > 1:
           nn.init.xavier_uniform_(weight.data, gain=gain)
       elif "bias" in name:
         weight.data.fill_(0.)
+    # self.tag_model.start_transitions.data = self.tag_model_1.log_transitions[self.pos_vocab.stoi[ROOT_TOKEN], :].data
+    # self.tag_model.transitions.data = self.tag_model_1.log_transitions
+    # self.tag_model.end_transitions.data = self.tag_model_1.log_transitions[:, self.pos_vocab.stoi[END_TOKEN]].data
+    return
 
   def get_accuracy(self, predictions=None, targets=None):
 
@@ -111,31 +119,47 @@ class Tagger(nn.Module):
     if self.tagger == "linear":
       scores = self.tag_model(input)
       tagger_output = dict(loss=None, output=scores, score=None, sequence=None)
-
+    # elif self.tagger == "crf":
+    #   pos_loss, pos_score, pos_seq = self.tag_model(input, pos_var[:, 1:], lengths, self.training)
+    #   tagger_output = dict(loss=pos_loss, output=None, score=pos_score, sequence=pos_seq)
     elif self.tagger == "crf":
 
-      # prepare padding mask
       mask = ((pos_var != self.pos_vocab.stoi[PAD_TOKEN]) - (pos_var == self.pos_vocab.stoi[END_TOKEN])).long()
-
-      # get rid of root and end token
       mask = mask[:, 1:-1]
       mask = mask.cuda() if torch.cuda.is_available() else mask
-
-      # prepare input for crf
       input = self.hid2tag(input)
-
-      # replace end token with padding (crf wants tag sequence without root and end token)
       pad_token = torch.LongTensor([self.pos_vocab.stoi[PAD_TOKEN]])
       pad_token = pad_token.cuda() if torch.cuda.is_available() else pad_token
       lengths = torch.LongTensor(lengths)
       lengths = lengths.cuda() if torch.cuda.is_available() else lengths
       indices = torch.LongTensor([i for i in range(pos_var.size(0))])
       indices = indices.cuda() if torch.cuda.is_available() else indices
-      tags = pos_var.index_put_((indices, lengths + 1), pad_token)
-      tags = tags[:, 1: -1]
+      tags = pos_var.index_put_((indices, lengths + 1),
+                                            pad_token)
 
-      # run crf
-      pos_loss, pos_score, pos_seq = self.tag_model(input, tags, mask, lengths, self.training)
+      pos_loss, pos_score, pos_seq = self.tag_model_1(input, tags[:, 1:-1], mask, lengths, self.training)
+      tagger_output = dict(loss=pos_loss, output=None, score=pos_score, sequence=pos_seq)
+
+      # if self.training:
+      #   pos_loss, pos_score, pos_seq = self.tag_model_1(input, tags[:, 1:-1], mask, lengths, self.training)
+      #   tagger_output = dict(loss=pos_loss, output=None, score=pos_score, sequence=pos_seq)
+      #   loglikeli = self.tag_model(input, tags[:, 1:-1], mask)
+      # else:
+      #   loglikeli = 0
+      # with torch.no_grad():
+      #   best_paths = self.tag_model.viterbi_tags(input, mask)
+      #   max_time = input.size(1)
+      #   test = [torch.LongTensor(x + [self.pos_vocab.stoi[PAD_TOKEN]] * (max_time - len(x))).unsqueeze(0) for x, y in
+      #           best_paths]
+      #   best_paths = torch.cat(test)
+      #   best_paths = best_paths.cuda() if torch.cuda.is_available() else best_paths
+      #   end_token_tensor = torch.zeros(input.size(0)).unsqueeze(1).long()
+      #   end_token_tensor = end_token_tensor.cuda() if torch.cuda.is_available() else end_token_tensor
+      #   best_paths = torch.cat((best_paths, end_token_tensor), dim=1)
+      #   end_token = torch.LongTensor([self.pos_vocab.stoi[END_TOKEN]])[0]
+      #   end_token = end_token.cuda() if torch.cuda.is_available() else end_token
+      #   pos_seq = best_paths.index_put_((torch.LongTensor([i for i in range(best_paths.size(0))]), lengths),
+      #                                      end_token)
 
       tagger_output = dict(loss=pos_loss, output=None, score=pos_score, sequence=pos_seq)
     else:

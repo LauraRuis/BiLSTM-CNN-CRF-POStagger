@@ -393,11 +393,11 @@ class ChainCRF(nn.Module):
         super(ChainCRF, self).__init__()
 
         self.tag_to_ix = tag_to_ix
-        self.tagset_size = n_tags
+        self.n_tags = n_tags
 
         # Matrix of transition parameters.  Entry i,j is the score of
         # transitioning *to* i *from* j.
-        self.log_transitions = nn.Parameter(torch.randn(self.tagset_size, self.tagset_size))
+        self.log_transitions = nn.Parameter(torch.randn(self.n_tags, self.n_tags))
 
         self.xavier_uniform()
 
@@ -414,7 +414,7 @@ class ChainCRF(nn.Module):
         selection = (
                     matrix
                     # Choose the current_tag-th row for each input
-                    .gather(1, rows.view(bsz, 1, 1).expand(bsz, 1, self.tagset_size))
+                    .gather(1, rows.view(bsz, 1, 1).expand(bsz, 1, self.n_tags))
                     # Squeeze down to (batch_size, num_tags)
                     .squeeze(1)
                     # Then choose the next_tag-th column for each of those
@@ -450,7 +450,7 @@ class ChainCRF(nn.Module):
             feat = feats[t]
 
             # broadcast emission probabilities
-            emit_scores = feat.view(bsz, self.tagset_size).unsqueeze(1)
+            emit_scores = feat.view(bsz, self.n_tags).unsqueeze(1)
 
             # calculate transition probabilities (broadcast over example axis, same for all examples in batch)
             trans_scores = self.log_transitions.unsqueeze(0)
@@ -481,8 +481,8 @@ class ChainCRF(nn.Module):
 
         # expand transitions for each example in bach
         transitions = self.log_transitions.view(
-            1, self.tagset_size, self.tagset_size).expand(
-            bsz, self.tagset_size, self.tagset_size)
+            1, self.n_tags, self.n_tags).expand(
+            bsz, self.n_tags, self.n_tags)
 
         # get tensor of root tokens and tensor of next tags (first tags)
         root_tags = torch.LongTensor([self.tag_to_ix[ROOT_TOKEN]] * bsz).unsqueeze(1)
@@ -530,45 +530,55 @@ class ChainCRF(nn.Module):
 
     def _viterbi_decode(self, feats, lengths):
 
-        # initialize the viterbi variables in log space
-        init_vvars = torch.full((1, self.tagset_size), -10000.)
-        init_vvars[0][self.tag_to_ix[ROOT_TOKEN]] = 0
-
         bsz, max_time, dim = feats.size()
 
-        # initialize list to keep track of backpointers
-        backpointers = torch.zeros(bsz, max_time, self.tagset_size).long() - 1
+        # initialize the viterbi variables in log space
+        init_vars = torch.full((1, self.n_tags), -10000.)
+        init_vars[0][self.tag_to_ix[ROOT_TOKEN]] = 0
+
+        # initialize tensor and list to keep track of backpointers
+        backpointers = torch.zeros(bsz, max_time, self.n_tags).long() - 1
         backpointers = backpointers.cuda() if torch.cuda.is_available() else backpointers
         best_last_tags = []
         best_path_scores = []
 
-        # forward_var at step i holds the viterbi variables for step i-1
-        forward_var = init_vvars.unsqueeze(0).repeat(bsz, 1, 1)
+        # forward_var at step t holds the viterbi variables for step t - 1, diff per example in batch
+        forward_var = init_vars.unsqueeze(0).repeat(bsz, 1, 1)
         forward_var = forward_var.cuda() if torch.cuda.is_available() else forward_var
+
+        # counter counting down from number of examples in batch to 0
         counter = bsz
 
+        # loop over sequence
         for t in range(max_time):
 
+            # if time equals some lengths in the batch, these sequences are ending
             ending = (lengths == t).nonzero()
             n_ending = len(ending)
 
+            # if there are sequences ending
             if n_ending > 0:
 
+                # grab their viterbi variables
                 forward_ending = forward_var[(counter - n_ending):counter]
-                counter -= n_ending
 
-                # transition to STOP_TAG
+                # the terminal var giving the best last tag is the viterbi variables + trans. prob. to end token
                 terminal_var = forward_ending + self.log_transitions[:, self.tag_to_ix[END_TOKEN]].unsqueeze(0)
                 path_scores, best_tag_idx = torch.max(terminal_var, 1)
 
+                # first sequence to end is last sequence in batch (sorted on sequence length)
                 for tag, score in zip(reversed(list(best_tag_idx)), reversed(list(path_scores))):
                     best_last_tags.append(tag)
                     best_path_scores.append(score)
 
-            feat = feats[:, t, :].view(bsz, self.tagset_size)
+                # update counter keeping track of how many sequences already ended
+                counter -= n_ending
 
-            # calculate scores of next tag per tag
-            forward_var = forward_var.view(bsz, self.tagset_size, 1)
+            # get emission probabilities at current time step
+            feat = feats[:, t, :].view(bsz, self.n_tags)
+
+            # calculate scores of next tag
+            forward_var = forward_var.view(bsz, self.n_tags, 1)
             trans_scores = self.log_transitions.unsqueeze(0)
             next_tag_vars = forward_var + trans_scores
 
@@ -579,8 +589,11 @@ class ChainCRF(nn.Module):
             # add emission scores and assign forward_var to the set
             # of viterbi variables we just computed
             forward_var = (viterbivars_t + feat).view(bsz, -1)
+
+            # save best tags as backpointers
             backpointers[:, t, :] = best_tag_ids.long()
 
+        # get final ending sequence(s) and calculate the best last tag(s)
         ending = (lengths == max_time).nonzero()
         ending = ending.cuda() if torch.cuda.is_available() else ending
         n_ending = len(ending)
@@ -597,6 +610,7 @@ class ChainCRF(nn.Module):
                 best_last_tags.append(tag)
                 best_path_scores.append(score)
 
+        # reverse the best last tags (and scores) to put them back in the original batch order
         best_last_tags = torch.LongTensor(list(reversed(best_last_tags)))
         best_last_tags = best_last_tags.cuda() if torch.cuda.is_available() else best_last_tags
         best_path_scores = torch.LongTensor(list(reversed(best_path_scores)))
@@ -607,25 +621,37 @@ class ChainCRF(nn.Module):
         best_paths = best_paths.cuda() if torch.cuda.is_available() else best_paths
         best_paths = best_paths.index_put_((torch.LongTensor([i for i in range(backpointers.size(0))]), lengths),
                                             best_last_tags)
+
+        # counter keeping track of number of active sequences
         num_active = 0
+
+        # loop from max time to 0
         for t in range(max_time - 1, -1, -1):
 
+            # if time step equals lengths of some sequences, they are starting
             starting = (lengths - 1 == t).nonzero()
             n_starting = len(starting)
 
+            # if there are sequences starting, grab their best last tags
             if n_starting > 0:
                 if t == max_time - 1:
                     best_tag_id = best_paths[num_active:num_active + n_starting, t + 1]
                 else:
                     last_tags = best_paths[num_active:num_active + n_starting, t + 1]
                     best_tag_id = torch.cat((best_tag_id, last_tags.unsqueeze(1)), dim=0)
+
+                # update number of active sequences
                 num_active += n_starting
+
+            # get currently relevant backpointers based on sequences that are active
             active = backpointers[:num_active, t]
 
+            # follow the backpointers to the best previous tag
             best_tag_id = best_tag_id.view(num_active, 1)
             best_tag_id = torch.gather(active, 1, best_tag_id)
             best_paths[:num_active, t] = best_tag_id.squeeze()
 
+        # add end tokens at the end of every sequence in the batch
         end_token_tensor = torch.zeros(bsz).unsqueeze(1).long()
         end_token_tensor = end_token_tensor.cuda() if torch.cuda.is_available() else end_token_tensor
         best_paths = torch.cat((best_paths, end_token_tensor), dim=1)
@@ -634,7 +660,7 @@ class ChainCRF(nn.Module):
         best_paths = best_paths.index_put_((torch.LongTensor([i for i in range(best_paths.size(0))]), lengths + 1),
                                            end_token)
 
-        # pop off the start tag (we dont want to return that to the caller)
+        # sanity check that first tag is the root token
         assert best_paths[:, 0].sum().item() == best_paths.size(0) * self.tag_to_ix[ROOT_TOKEN]
 
         return best_path_scores, best_paths
@@ -650,7 +676,7 @@ class ChainCRF(nn.Module):
           loss = self.neg_log_likelihood(lstm_feats, tags, mask)
           with torch.no_grad():
               score, tag_seq = self._viterbi_decode(lstm_feats, lengths)
-          loss = loss.sum()
+          loss = loss.sum() / loss.size(0)
         else:
           loss = None
           score, tag_seq = self._viterbi_decode(lstm_feats, lengths)

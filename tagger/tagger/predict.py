@@ -41,8 +41,10 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
 
         if "ud" in dataset_path:
           original_iter = read_conllu(data_f)
+          ud = True
         else:
           original_iter = read_conllx(data_f)
+          ud = False
 
         for pred in predict(data_iter=data_iter, model=model):
 
@@ -57,7 +59,10 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
           for tok, pred_tag in \
                   zip(tokens, pred_tags):
             if write_tag:
-              tok.pos = i2pos[pred_tag]
+              if ud:
+                tok.xpos = i2pos[pred_tag]
+              else:
+                tok.pos = i2pos[pred_tag]
 
             f.write(str(tok) + '\n')
           f.write('\n')

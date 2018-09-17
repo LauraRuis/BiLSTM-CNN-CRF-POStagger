@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class Tagger(nn.Module):
 
   def __init__(self, dim=0, emb_dim=0, n_words=0, n_tags=0, n_chars=0, char_emb_dim=0, num_filters=0, window_size=0,
-               dropout_p=0.,
+               dropout_p=0., var_drop=False,
                num_layers=1, bi=True,
                form_vocab=None, pos_vocab=None, char_vocab=None,
                char_model=None, tagger=None, **kwargs):
@@ -47,7 +47,8 @@ class Tagger(nn.Module):
                                     bidirectional=bi,
                                     char_model=char_model,
                                     num_filters=num_filters,
-                                    window_size=window_size)
+                                    window_size=window_size,
+                                    var_drop=var_drop)
 
     self.pos_criterion = nn.CrossEntropyLoss(size_average=False, reduce=True,
                                              ignore_index=self.pos_padding_idx)

@@ -14,7 +14,7 @@ class RecurrentEncoder(nn.Module):
                dropout_p=0.33, bidirectional=True, num_layers=1,
                num_filters=0, window_size=0,
                form_padding_idx=1, pos_padding_idx=0, char_padding_idx=0,
-               char_model=None):
+               char_model=None, var_drop=False):
     super(RecurrentEncoder, self).__init__()
 
     self.dim = dim
@@ -59,8 +59,12 @@ class RecurrentEncoder(nn.Module):
 
     # this is our own LSTM that supports variational dropout
     self.num_layers = num_layers
+    if var_drop:
+      var_dropout_p = dropout_p
+    else:
+      var_dropout_p = 0
     self.rnn = LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
-                    batch_first=False, dropout=0,
+                    batch_first=False, dropout=var_dropout_p,
                     bidirectional=bidirectional)
     self.bi = bidirectional
     self.hidden_size = self.dim

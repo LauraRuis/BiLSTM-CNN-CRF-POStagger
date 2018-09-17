@@ -27,7 +27,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
           char_model=None, tagger=None,
           batch_size=5000,
           n_iters=10, dropout_p=0.33, num_layers=1,
-          print_every=1, eval_every=100, bi=True,
+          print_every=1, eval_every=100, bi=True, var_drop=False,
           lr=0.001, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0., plateau=False,
           resume=False, lr_decay=1.0, lr_decay_steps=5000, clip=5., momentum=0,
           optimizer='adam', glove=True, seed=42, dim=0, window_size=0, num_filters=0, **kwargs):
@@ -46,9 +46,11 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   if dataset == "conllx":
     dataset_obj = ConllXDataset
     fields = get_data_fields()
+    ud = False
   elif dataset == "conllu":
     dataset_obj = ConllUDataset
     fields = get_data_fields_conllu()
+    ud = True
   else:
     raise NotImplementedError()
 
@@ -293,7 +295,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
                        dataset_path=dev_path,
                        out_path=dev_out_path)
 
-      _dev_pos_acc = get_pos_acc(dev_path, dev_out_path)
+      _dev_pos_acc = get_pos_acc(dev_path, dev_out_path, ud)
 
       logger.info("Evaluation dev Iter %08d "
                   "pos-acc %5.2f" % (
@@ -305,7 +307,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
       predict_and_save(dataset=test_dataset, model=model,
                        dataset_path=test_path,
                        out_path=test_out_path)
-      _test_pos_acc = get_pos_acc(test_path, test_out_path)
+      _test_pos_acc = get_pos_acc(test_path, test_out_path, ud)
 
       logger.info("Evaluation test Iter %08d "
                   "pos-acc %5.2f" % (

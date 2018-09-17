@@ -5,6 +5,7 @@ from torchtext.data import Iterator
 from torchtext.vocab import GloVe
 
 from tagger.conllxdataset import ConllXDataset, get_data_fields
+from tagger.conlludataset import ConllUDataset, get_data_fields_conllu
 from tagger.utils import print_example, save_checkpoint, print_parameters
 from tagger.predict import predict_and_save
 from tagger.model import Tagger
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
 
 
-def train(mode='train', train_path='train.conllx', model='dozat',
+def train(mode='train', train_path='train.conllx', model='dozat', dataset='conllx',
           dev_path='dev.conllx', test_path='test.conllx',
           ud=True,
           output_dir='output',
@@ -42,8 +43,15 @@ def train(mode='train', train_path='train.conllx', model='dozat',
   np.random.seed(seed)
 
   # load data component
-  dataset_obj = ConllXDataset
-  fields = get_data_fields()
+  if dataset == "conllx":
+    dataset_obj = ConllXDataset
+    fields = get_data_fields()
+  elif dataset == "conllu":
+    dataset_obj = ConllUDataset
+    fields = get_data_fields_conllu()
+  else:
+    raise NotImplementedError()
+
   _form = fields['form'][-1]
   _pos = fields['pos'][-1]
   _chars = fields['chars'][-1]
@@ -230,12 +238,12 @@ def train(mode='train', train_path='train.conllx', model='dozat',
     batch = next(iter(train_iter))
     form_var, lengths = batch.form
 
-    pos_var = batch.pos
+    pos_var, pos_lengths = batch.pos
     char_var, sentence_lengths, word_lengths = batch.chars
     lengths = lengths.view(-1).tolist()
 
     result = model(form_var=form_var, char_var=char_var,  pos_var=pos_var,
-                   lengths=lengths, word_lengths=word_lengths)
+                   lengths=lengths, word_lengths=word_lengths, pos_lengths=pos_lengths)
 
     # rows sum to 1
     # print(torch.exp(output_graph).sum(-1))
@@ -258,7 +266,7 @@ def train(mode='train', train_path='train.conllx', model='dozat',
     if iter_i % print_every == 0:
 
       # get scores for this batch
-      if model.tagger == "linear":
+      if model.tagger == "linear" or "mlp":
           pos_predictions = result['output'].max(2)[1]
       else:
           pos_predictions = result['sequence']

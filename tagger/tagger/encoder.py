@@ -59,14 +59,14 @@ class RecurrentEncoder(nn.Module):
 
     # this is our own LSTM that supports variational dropout
     self.num_layers = num_layers
-    # self.rnn = LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
-    #                 batch_first=False, dropout=dropout_p,
-    #                 bidirectional=bidirectional)
+    self.rnn = LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
+                    batch_first=False, dropout=0,
+                    bidirectional=bidirectional)
     self.bi = bidirectional
     self.hidden_size = self.dim
-    self.rnn = nn.LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
-                       batch_first=False, dropout=dropout_p,
-                       bidirectional=bidirectional)
+    # self.rnn = nn.LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
+    #                    batch_first=False, dropout=dropout_p,
+    #                    bidirectional=bidirectional)
 
     self.xavier_uniform()
 

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch
 from torchtext.data import Iterator
 
-from tagger.utils import read_conllx
+from tagger.utils import read_conllx, read_conllu
 
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
@@ -39,7 +39,10 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
     with open(dataset_path, mode='r', encoding='utf-8') as data_f:
       with torch.no_grad():
 
-        original_iter = read_conllx(data_f)
+        if "ud" in dataset_path:
+          original_iter = read_conllu(data_f)
+        else:
+          original_iter = read_conllx(data_f)
 
         for pred in predict(data_iter=data_iter, model=model):
 
@@ -48,7 +51,7 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
           pred_tags = [-1] * len(tokens)
           write_tag = False
           if len(pred["pos"]) > 0:
-            pred_tags = pred["pos"].data.view(-1).tolist()[1:]
+            pred_tags = pred["pos"].data.view(-1).tolist()
             write_tag = True
 
           for tok, pred_tag in \
@@ -71,16 +74,16 @@ def predict(data_iter=None, model=None):
     lengths = lengths.view(-1).tolist()
     n_words += sum(lengths)
 
-    pos_var = batch.pos
+    pos_var, pos_lengths = batch.pos
 
     # predict
     encoder_output, _ = model.encode_input(form_var=form_var, pos_var=pos_var, char_var=char_var,
                                                    lengths=lengths, word_lengths=word_lengths)
 
-    result = model.pos_tagger(encoder_output, pos_var, lengths)
+    result = model.pos_tagger(encoder_output, pos_var, lengths, pos_lengths)
 
     # get predicted pos
-    if model.tagger == "linear":
+    if model.tagger == "linear" or "mlp":
       pos_predictions = result['output'].max(2)[1]
     else:
       pos_predictions = result['sequence']

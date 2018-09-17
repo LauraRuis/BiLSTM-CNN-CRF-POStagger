@@ -17,6 +17,7 @@ def main():
   ap.add_argument('--output_dir', type=str, default='output')
 
   # data
+  ap.add_argument('--dataset', choices=['conllu', 'conllx'],default='conllx')
   ap.add_argument('--train_path', type=str,
                   default='data/wsj/pos/train.tsv')
   ap.add_argument('--dev_path', type=str,
@@ -32,7 +33,7 @@ def main():
   ap.add_argument('--window_size', type=int, default=3)
   ap.add_argument('--num_filters', type=int, default=30)
   ap.add_argument('--char_model', choices=['dozat', 'simple', 'cnn', 'none'], default='cnn')
-  ap.add_argument('--tagger', choices=['linear', 'crf'], default='linear')
+  ap.add_argument('--tagger', choices=['linear', 'mlp', 'crf'], default='linear')
   ap.add_argument('--batch_size', type=int, default=238)
   ap.add_argument('--num_layers', type=int, default=1)
   ap.add_argument('--print_every', type=int, default=300)
@@ -69,6 +70,12 @@ def main():
   else:
     cfg["char_model"] = None
     assert cfg["char_emb_dim"] == 0, "if not using character model, set char_emb_dim to 0"
+
+  if cfg["dataset"] == "conllu":
+    print("Changing data paths to CONLLU paths...")
+    cfg["train_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-train.conllu'
+    cfg["dev_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-dev.conllu'
+    cfg["test_path"] = '../data/ud/UD_English-wst/2017/gold/en-ud-test-gold.conllu'
 
   print("Config:")
   for k, v in cfg.items():

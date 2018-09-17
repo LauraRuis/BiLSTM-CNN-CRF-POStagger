@@ -12,40 +12,18 @@ def get_data_fields_conllu():
   """Creates torchtext fields for the I/O pipeline."""
   form = Field(
     include_lengths=True, batch_first=True,
-    init_token=ROOT_TOKEN, eos_token=None, pad_token=PAD_TOKEN, lower=True)
-  deprel = Field(
-    batch_first=True, init_token=PAD_TOKEN, eos_token=None, pad_token=PAD_TOKEN,
-    unk_token=None)
+    init_token=None, eos_token=None, pad_token=PAD_TOKEN, lower=True)
   pos = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=None, pad_token=PAD_TOKEN,
+    include_lengths=True, batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
     unk_token=None)
-  upos = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=None, pad_token=PAD_TOKEN,
-    unk_token=None)
-  morph = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=None, pad_token=PAD_TOKEN,
-    unk_token=None
-  )
-  crf_pos = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
-    unk_token=None)
-
   nesting_field = Field(tokenize=list, pad_token=PAD_TOKEN, batch_first=True,
-                        init_token=START_TOKEN, eos_token=END_TOKEN)
-  chars = NestedField(nesting_field, init_token=ROOT_TOKEN, pad_token=PAD_TOKEN, include_lengths=True)
-
-  head = Field(
-    batch_first=True, use_vocab=False,
-    init_token=0, eos_token=None, pad_token=0,
-    preprocessing=lambda l: list(map(int, l)))
+                        init_token=None, eos_token=None)
+  chars = NestedField(nesting_field, init_token=None, pad_token=PAD_TOKEN, eos_token=None, include_lengths=True)
 
 
   fields = {
-    'form': ('form', form),
-    'pos': ('pos', pos),
-    'crf_pos': ('crf_pos', crf_pos),
-    'upos': ('upos', upos),
-    'feats': ('feats', morph),
+    'form':   ('form', form),
+    'pos':    ('pos', pos),
     'chars': ('chars', chars)
   }
 
@@ -75,9 +53,7 @@ def conllu_reader(f):
   Return examples as a dictionary.
   Args:
     f:
-
   Returns:
-
   """
 
   ex = empty_conllu_example_dict()
@@ -99,23 +75,16 @@ def conllu_reader(f):
 
     _id, _form, _lemma, _upos, _xpos, _feats, _head, _deprel, _deps, _misc = parts
 
-    ex['id'].append(_id)
-    ex['form'].append(_form)
-    ex['lemma'].append(_lemma)
-    ex['upos'].append(_upos)
+    chars = []
+    for char in list(_form):
+      # if char.isdigit():
+      #   chars.append('0')
+      # else:
+      #   chars.append(char)
+      chars.append(char)
+    ex['form'].append(''.join(chars))
     ex['pos'].append(_xpos)
-    ex['crf_pos'].append(_xpos)
-    ex['feats'].append(_feats)
-
-    # TODO: kan dit? (0 is root)
-    if _head == "_":
-      _head = 0
-
-    ex['head'].append(_head)
-    ex['deprel'].append(_deprel)
-    ex['deps'].append(_deps)
-    ex['misc'].append(_misc)
-    ex['chars'].append(list(_form))
+    ex['chars'].append(chars)
 
   # possible last sentence without newline after
   if len(ex['form']) > 0:

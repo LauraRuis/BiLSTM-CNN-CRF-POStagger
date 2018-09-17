@@ -407,7 +407,7 @@ class ChainCRF(nn.Module):
         self.log_transitions.data[tag_to_ix[END_TOKEN], :] = -10000.
 
     def xavier_uniform(self, gain=1.):
-        torch.nn.init.xavier_normal_(self.log_transitions)
+        torch.nn.init.xavier_uniform_(self.log_transitions)
 
     def _select_from_matrix(self, matrix, rows=None, cols=None):
         bsz = rows.size(0)
@@ -479,18 +479,19 @@ class ChainCRF(nn.Module):
         mask = mask.float().transpose(0, 1)  # (time, batch_size)
         tags = tags.transpose(0, 1)  # (time, batch_size)
 
-        # expand transitions for each example in bach
-        transitions = self.log_transitions.view(
-            1, self.n_tags, self.n_tags).expand(
-            bsz, self.n_tags, self.n_tags)
+        # # expand transitions for each example in bach
+        # transitions = self.log_transitions.view(
+        #     1, self.n_tags, self.n_tags).expand(
+        #     bsz, self.n_tags, self.n_tags)
 
         # get tensor of root tokens and tensor of next tags (first tags)
-        root_tags = torch.LongTensor([self.tag_to_ix[ROOT_TOKEN]] * bsz).unsqueeze(1)
+        root_tags = torch.LongTensor([self.tag_to_ix[ROOT_TOKEN]] * bsz)
         root_tags = root_tags.cuda() if torch.cuda.is_available() else root_tags
-        next_tags = tags[0]
+        next_tags = tags[0].squeeze()
 
         # initial transition is from root token to first tags
-        initial_transition = self._select_from_matrix(transitions, rows=root_tags, cols=next_tags)
+        # initial_transition = self._select_from_matrix(transitions, rows=root_tags, cols=next_tags)
+        initial_transition = self.log_transitions[root_tags, next_tags]
 
         # initialize scores
         scores = initial_transition
@@ -500,23 +501,25 @@ class ChainCRF(nn.Module):
 
             # get emission scores, transition scores and calculate score for current time step
             feat = feats[t]
-            next_tags = tags[t + 1]
-            current_tags = tags[t]
+            next_tags = tags[t + 1].squeeze()
+            current_tags = tags[t].squeeze()
             emis = torch.gather(feat, 1, current_tags.unsqueeze(1)).squeeze()
-            trans = self._select_from_matrix(transitions, rows=current_tags, cols=next_tags)
+            # trans = self._select_from_matrix(transitions, rows=current_tags, cols=next_tags)
+            trans = self.log_transitions[current_tags, next_tags]
 
             # add scores
             scores = scores + trans * mask[t + 1] + emis * mask[t]
 
         # add scores for transitioning to stop tag
         last_tag_index = mask.sum(0).long() - 1
-        last_tags = torch.gather(tags, 0, last_tag_index.view(1, bsz)).view(-1, 1)  # TODO: add this line to AllenNLP
+        last_tags = torch.gather(tags, 0, last_tag_index.view(1, bsz)).view(-1)  # TODO: add this line to AllenNLP
 
         # end_tags
-        end_tags = torch.LongTensor([self.tag_to_ix[END_TOKEN]] * bsz).unsqueeze(1)
+        end_tags = torch.LongTensor([self.tag_to_ix[END_TOKEN]] * bsz)
         end_tags = end_tags.cuda() if torch.cuda.is_available() else end_tags
 
-        last_transition = self._select_from_matrix(transitions, rows=last_tags, cols=end_tags)
+        # last_transition = self._select_from_matrix(transitions, rows=last_tags, cols=end_tags)
+        last_transition = self.log_transitions[last_tags, end_tags]
 
         # add the last input if its not masked
         last_inputs = feats[-1]
@@ -651,19 +654,10 @@ class ChainCRF(nn.Module):
             best_tag_id = torch.gather(active, 1, best_tag_id)
             best_paths[:num_active, t] = best_tag_id.squeeze()
 
-        # add end tokens at the end of every sequence in the batch
-        end_token_tensor = torch.zeros(bsz).unsqueeze(1).long()
-        end_token_tensor = end_token_tensor.cuda() if torch.cuda.is_available() else end_token_tensor
-        best_paths = torch.cat((best_paths, end_token_tensor), dim=1)
-        end_token = torch.LongTensor([self.tag_to_ix[END_TOKEN]])[0]
-        end_token = end_token.cuda() if torch.cuda.is_available() else end_token
-        best_paths = best_paths.index_put_((torch.LongTensor([i for i in range(best_paths.size(0))]), lengths + 1),
-                                           end_token)
-
         # sanity check that first tag is the root token
         assert best_paths[:, 0].sum().item() == best_paths.size(0) * self.tag_to_ix[ROOT_TOKEN]
 
-        return best_path_scores, best_paths
+        return best_path_scores, best_paths[:, 1:]
 
     def neg_log_likelihood(self, feats, tags, mask):
         forward_score = self._forward_belief_prop_logspace(feats, mask)
@@ -676,9 +670,49 @@ class ChainCRF(nn.Module):
           loss = self.neg_log_likelihood(lstm_feats, tags, mask)
           with torch.no_grad():
               score, tag_seq = self._viterbi_decode(lstm_feats, lengths)
-          loss = loss.sum() / loss.size(0)
+          loss = loss.sum()
         else:
           loss = None
           score, tag_seq = self._viterbi_decode(lstm_feats, lengths)
 
         return loss, score, tag_seq
+
+
+class MLPTagger(nn.Module):
+  """
+
+  MLP pos tagger
+
+  """
+
+  def __init__(self, input_dim=512, dim=128, num_layers=1, output_dim=None, dropout_p=0.33):
+    super(MLPTagger, self).__init__()
+
+    self.input_dim = input_dim
+    self.output_dim = output_dim
+    self.dropout_p = dropout_p
+
+    self.mlp = MLP(input_dim, dim, dim, dropout_p=dropout_p, depth=num_layers)
+    self.linear = nn.Linear(dim, output_dim)
+
+  def init_parameter(self):
+    # copied from nn.Linear()
+    stdv = 1. / math.sqrt(self.attention_weights.size(1))
+    self.attention_weights.data.uniform_(-stdv, stdv)
+
+  def forward(self, input=None, tags=None, lengths=None, training=False):
+
+    if isinstance(input, PackedSequence):
+        input, lengths = input
+        input = PackedSequence(input, lengths)
+        input, _ = pad_packed_sequence(input)
+        input = input.transpose(0, 1)
+
+    # MLP
+    output = self.mlp(input)
+
+    # Linear transform
+    scores = self.linear(output)
+    # scores = F.log_softmax(scores, dim=2)
+
+    return scores

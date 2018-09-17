@@ -13,10 +13,7 @@ def get_data_fields():
     include_lengths=True, batch_first=True,
     init_token=None, eos_token=None, pad_token=PAD_TOKEN, lower=True)
   pos = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=None, pad_token=PAD_TOKEN,
-    unk_token=None)
-  pos = Field(
-    batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
+    include_lengths=True, batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
     unk_token=None)
   nesting_field = Field(tokenize=list, pad_token=PAD_TOKEN, batch_first=True,
                         init_token=None, eos_token=None)
@@ -108,7 +105,7 @@ class ConllXDataset(Dataset):
     with io.open(os.path.expanduser(path), encoding="utf8") as f:
       examples = []
       for d in conllx_reader(f):
-        if len(d["form"]) >= 200 and "train" in path:
+        if len(d["form"]) >= 70 and "train" in path:
           continue
         else:
           examples.append(Example.fromdict(d, fields))

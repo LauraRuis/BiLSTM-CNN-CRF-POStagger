@@ -268,7 +268,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
     if iter_i % print_every == 0:
 
       # get scores for this batch
-      if model.tagger == "linear" or "mlp":
+      if model.tagger == "linear" or model.tagger == "mlp":
           pos_predictions = result['output'].max(2)[1]
       else:
           pos_predictions = result['sequence']

@@ -88,7 +88,7 @@ def predict(data_iter=None, model=None):
     result = model.pos_tagger(encoder_output, pos_var, lengths, pos_lengths)
 
     # get predicted pos
-    if model.tagger == "linear" or "mlp":
+    if model.tagger == "linear" or model.tagger == "mlp":
       pos_predictions = result['output'].max(2)[1]
     else:
       pos_predictions = result['sequence']

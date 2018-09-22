@@ -74,9 +74,9 @@ def main():
 
   if cfg["dataset"] == "conllu":
     print("Changing data paths to CONLLU paths...")
-    cfg["train_path"] = 'data/ud/UD_English-wst/2018/gold/en_ewt-ud-train.conllu'
-    cfg["dev_path"] = 'data/ud/UD_English-wst/2018/gold/en_ewt-ud-dev_nocomments.txt'
-    cfg["test_path"] = 'data/ud/UD_English-wst/2017/gold/en-ud-test-gold_nocomments.txt'
+    cfg["train_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-train.conllu'
+    cfg["dev_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-dev_nocomments.txt'
+    cfg["test_path"] = '../data/ud/UD_English-wst/2017/gold/en-ud-test-gold_nocomments.txt'
 
   print("Config:")
   for k, v in cfg.items():

@@ -42,6 +42,7 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
         if "ud" in dataset_path:
           original_iter = read_conllu(data_f)
           ud = True
+          i2upos = dataset.fields['upos'].vocab.itos
         else:
           original_iter = read_conllx(data_f)
           ud = False
@@ -51,18 +52,24 @@ def predict_and_save(dataset=None, model=None, dataset_path='dev.conll',
           tokens = next(original_iter)
 
           pred_tags = [-1] * len(tokens)
-          write_tag = False
+          pred_utags = [-1] * len(tokens)
+          write_tag, write_utag = False, False
           if len(pred["pos"]) > 0:
             pred_tags = pred["pos"].data.view(-1).tolist()
             write_tag = True
+          if len(pred["upos"]) > 0:
+            pred_utags = pred["upos"].data.view(-1).tolist()
+            write_utag = True
 
-          for tok, pred_tag in \
-                  zip(tokens, pred_tags):
+          for tok, pred_tag, pred_utag in \
+                  zip(tokens, pred_tags, pred_utags):
             if write_tag:
               if ud:
                 tok.xpos = i2pos[pred_tag]
               else:
                 tok.pos = i2pos[pred_tag]
+            if write_utag:
+              tok.upos = i2upos[pred_utag]
 
             f.write(str(tok) + '\n')
           f.write('\n')
@@ -82,18 +89,24 @@ def predict(data_iter=None, model=None):
     pos_var, pos_lengths = batch.pos
 
     # predict
-    encoder_output, _ = model.encode_input(form_var=form_var, pos_var=pos_var, char_var=char_var,
-                                                   lengths=lengths, word_lengths=word_lengths)
+    with torch.no_grad():
+        encoder_output, _ = model.encode_input(form_var=form_var, pos_var=pos_var, char_var=char_var,
+                                               lengths=lengths, word_lengths=word_lengths)
 
-    result = model.pos_tagger(encoder_output, pos_var, lengths, pos_lengths)
+        result = model.pos_tagger(encoder_output, pos_var, lengths, pos_lengths)
 
     # get predicted pos
+    upos_predictions = []
     if model.tagger == "linear" or model.tagger == "mlp":
-      pos_predictions = result['output'].max(2)[1]
+      if model.upos_pred:
+        upos_predictions = result['output']['upos'].max(2)[1]
+        pos_predictions = result['output']['xpos'].max(2)[1]
+      else:
+        pos_predictions = result['output']['xpos'].max(2)[1]
     else:
       pos_predictions = result['sequence']
 
-    predictions = dict(pos=pos_predictions)
+    predictions = dict(pos=pos_predictions, upos=upos_predictions)
 
     yield predictions
 

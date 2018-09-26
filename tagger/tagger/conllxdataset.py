@@ -101,13 +101,14 @@ class ConllXDataset(Dataset):
             values should be tuples of (name, field).
             Keys not present in the input dictionary are ignored.
     """
-
+    self.n_tokens = 0
     with io.open(os.path.expanduser(path), encoding="utf8") as f:
       examples = []
       for d in conllx_reader(f):
         if len(d["form"]) >= 70 and "train" in path:
           continue
         else:
+          self.n_tokens += len(Example.fromdict(d, fields).form)
           examples.append(Example.fromdict(d, fields))
         # examples.append(Example.fromdict(d, fields))
 

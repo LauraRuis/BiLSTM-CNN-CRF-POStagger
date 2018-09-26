@@ -16,6 +16,9 @@ def get_data_fields_conllu():
   pos = Field(
     include_lengths=True, batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
     unk_token=None)
+  upos = Field(
+    include_lengths=True, batch_first=True, init_token=ROOT_TOKEN, eos_token=END_TOKEN, pad_token=PAD_TOKEN,
+    unk_token=None)
   nesting_field = Field(tokenize=list, pad_token=PAD_TOKEN, batch_first=True,
                         init_token=None, eos_token=None)
   chars = NestedField(nesting_field, init_token=None, pad_token=PAD_TOKEN, eos_token=None, include_lengths=True)
@@ -24,6 +27,7 @@ def get_data_fields_conllu():
   fields = {
     'form':   ('form', form),
     'pos':    ('pos', pos),
+    'upos': ('upos', upos),
     'chars': ('chars', chars)
   }
 
@@ -84,6 +88,7 @@ def conllu_reader(f):
       chars.append(char)
     ex['form'].append(''.join(chars))
     ex['pos'].append(_xpos)
+    ex['upos'].append(_upos)
     ex['chars'].append(chars)
 
   # possible last sentence without newline after
@@ -107,7 +112,7 @@ class ConllUDataset(Dataset):
             values should be tuples of (name, field).
             Keys not present in the input dictionary are ignored.
     """
-
+    self.n_tokens = 0
     with io.open(os.path.expanduser(path), encoding="utf8") as f:
 
       # examples = [Example.fromdict(d, fields) for d in conllu_reader(f)]
@@ -116,9 +121,13 @@ class ConllUDataset(Dataset):
         examples = []
         for d in conllu_reader(f):
           if len(Example.fromdict(d, fields).form) <= 70:
+            self.n_tokens += len(Example.fromdict(d, fields).form)
             examples.append(Example.fromdict(d, fields))
       else:
-        examples = [Example.fromdict(d, fields) for d in conllu_reader(f)]
+        examples = []
+        for d in conllu_reader(f):
+          self.n_tokens += len(Example.fromdict(d, fields).form)
+          examples.append(Example.fromdict(d, fields))
 
         # if len(Example.fromdict(d, fields).form) > 60:
       #     count += 1

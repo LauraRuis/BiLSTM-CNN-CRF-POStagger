@@ -42,7 +42,7 @@ class RecurrentEncoder(nn.Module):
     if self.char_input:
       if char_model == "simple":
         self.encode_characters = SimpleCharModel(n_chars, char_padding_idx,
-                                                 emb_dim=char_emb_dim, hidden_size=100, output_dim=50, bi=True)
+                                                 emb_dim=char_emb_dim, hidden_size=100, output_dim=emb_dim, bi=True)
       elif char_model == "dozat":
         self.encode_characters = DozatCharModel(n_chars, char_padding_idx,
                                                 emb_dim=char_emb_dim, hidden_size=400, output_dim=emb_dim, bi=False)
@@ -53,24 +53,21 @@ class RecurrentEncoder(nn.Module):
 
       self.char_model = char_model
       if char_model == "dozat" or char_model == "simple":
-        self.rnn_input_size += 50
+        self.rnn_input_size += emb_dim
       elif char_model == "cnn":
         self.rnn_input_size += num_filters
 
     # this is our own LSTM that supports variational dropout
     self.num_layers = num_layers
     if var_drop:
-      var_dropout_p = dropout_p
+      var_dropout_p = 0.5
     else:
       var_dropout_p = 0
     self.rnn = LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
-                    batch_first=False, dropout=var_dropout_p,
+                    batch_first=False, dropout=dropout_p,
                     bidirectional=bidirectional)
     self.bi = bidirectional
     self.hidden_size = self.dim
-    # self.rnn = nn.LSTM(self.rnn_input_size, self.dim, num_layers, bias=True,
-    #                    batch_first=False, dropout=dropout_p,
-    #                    bidirectional=bidirectional)
 
     self.xavier_uniform()
 

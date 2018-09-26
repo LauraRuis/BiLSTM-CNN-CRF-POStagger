@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 
 class Tagger(nn.Module):
 
-  def __init__(self, dim=0, emb_dim=0, n_words=0, n_tags=0, n_chars=0, char_emb_dim=0, num_filters=0, window_size=0,
+  def __init__(self, dim=0, emb_dim=0, n_words=0, n_tags=0, n_utags=0, n_chars=0,
+               char_emb_dim=0, num_filters=0, window_size=0,
                dropout_p=0., var_drop=False,
                num_layers=1, bi=True,
-               form_vocab=None, pos_vocab=None, char_vocab=None,
+               form_vocab=None, pos_vocab=None, char_vocab=None, upos_vocab=None,
                char_model=None, tagger=None, **kwargs):
 
     super(Tagger, self).__init__()
@@ -29,6 +30,10 @@ class Tagger(nn.Module):
     self.pos_vocab = pos_vocab
     self.pos_padding_idx = pos_vocab.stoi[PAD_TOKEN]
     self.pos_root_idx = pos_vocab.stoi[ROOT_TOKEN]
+    self.upos_pred = True if n_utags > 0 else False
+
+    if self.upos_pred:
+      self.upos_padding_idx = upos_vocab.stoi[PAD_TOKEN]
 
     self.char_vocab = char_vocab
     self.char_padding_idx = char_vocab.stoi[PAD_TOKEN]
@@ -52,8 +57,9 @@ class Tagger(nn.Module):
 
     self.pos_criterion = nn.CrossEntropyLoss(size_average=False, reduce=True,
                                              ignore_index=self.pos_padding_idx)
-    # self.pos_criterion = nn.NLLLoss(size_average=False, reduce=True,
-    #                                           ignore_index=self.pos_padding_idx)
+    if self.upos_pred:
+      self.upos_criterion = nn.CrossEntropyLoss(size_average=False, reduce=True,
+                                               ignore_index=self.upos_padding_idx)
 
     self.tagger_input_dim = self.dim * 2 if bi else self.dim
     self.tagger = tagger
@@ -67,7 +73,12 @@ class Tagger(nn.Module):
       self.tag_model = nn.Linear(self.tagger_input_dim, n_tags)
       self.xavier_uniform("tag_model")
     elif tagger == "mlp":
-      self.tag_model = MLPTagger(self.tagger_input_dim, dim=128, num_layers=1, output_dim=n_tags, dropout_p=dropout_p)
+      self.xpos_tag_model = MLPTagger(self.tagger_input_dim, dim=128, num_layers=1, output_dim=n_tags,
+                                      dropout_p=dropout_p)
+
+      if self.upos_pred:
+        self.upos_tag_model = MLPTagger(self.tagger_input_dim, dim=128, num_layers=1, output_dim=n_utags,
+                                        dropout_p=dropout_p)
 
   def xavier_uniform(self, name, gain=1.):
 
@@ -89,7 +100,16 @@ class Tagger(nn.Module):
       pos_match = (pos_eq * pos_mask).sum().data.item()
       pos_acc = 100. * pos_match / total_pos
 
-    return pos_acc
+    upos_acc = 0
+    if len(predictions["upos"]) > 0:
+      pos_eq = torch.eq(predictions["upos"].data, targets["upos"][0].data[:, 1:-1]).long()  # TODO: change back
+      pos_mask = (targets["upos"][0].data[:, 1:-1] != self.upos_padding_idx)
+      pos_mask = pos_mask.long()
+      total_pos = pos_mask.sum().data.item()
+      pos_match = (pos_eq * pos_mask).sum().data.item()
+      upos_acc = 100. * pos_match / total_pos
+
+    return pos_acc, upos_acc
 
   @staticmethod
   def classification_loss(scores, targets, criterion):
@@ -102,11 +122,19 @@ class Tagger(nn.Module):
 
   def get_loss(self, scores=None, targets=None):
 
-    xpos_scores = scores["output"]
-    xpos_targets = targets["pos"][0]
+    if self.upos_pred:
+      xpos_scores = scores["output"]["xpos"]
+      xpos_targets = targets["pos"][0]
+      upos_scores = scores["output"]["upos"]
+      upos_targets = targets["upos"][0]
+    else:
+      xpos_scores = scores["output"]["xpos"]
+      xpos_targets = targets["pos"][0]
 
     if self.tagger == "linear" or self.tagger == "mlp":
       loss = self.classification_loss(xpos_scores, xpos_targets[:, 1:-1], self.pos_criterion)
+      if self.upos_pred:
+        loss += self.classification_loss(upos_scores, upos_targets[:, 1:-1], self.upos_criterion)
     elif self.tagger == "crf":
       loss = scores["loss"]
     else:
@@ -158,7 +186,12 @@ class Tagger(nn.Module):
       tagger_output = dict(loss=pos_loss, output=None, score=pos_score, sequence=pos_seq)
     elif self.tagger == "mlp":
 
-      scores = self.tag_model(input)
+      scores = self.xpos_tag_model(input)
+      if self.upos_pred:
+        scores_upos = self.upos_tag_model(input)
+        scores = dict(xpos=scores, upos=scores_upos)
+      else:
+        scores = dict(xpos=scores, upos=None)
       tagger_output = dict(loss=None, output=scores, score=None, sequence=None)
 
     else:

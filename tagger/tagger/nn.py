@@ -86,6 +86,8 @@ class CharModel(nn.Module):
 
     # character model
     output = self.char_model(embedded, char_input_no_pad, sorted_lengths_no_pad)
+    if len(output.shape) == 1:
+        output = output.unsqueeze(0)
 
     # put padding back
     padding_length = sorted_lengths.size(0) - non_padding_idx
@@ -109,7 +111,7 @@ class CharModel(nn.Module):
 
 class DozatCharModel(CharModel):
 
-  def __init__(self, n_chars, padding_idx, emb_dim=100, hidden_size=400, output_dim=100, dropout_p=0.5,
+  def __init__(self, n_chars, padding_idx, emb_dim=100, hidden_size=400, output_dim=100, dropout_p=0.33,
                bi=False):
     super(DozatCharModel, self).__init__(n_chars, padding_idx, emb_dim=emb_dim, hidden_size=hidden_size,
                                          output_dim=output_dim, dropout_p=0.5, bi=False)
@@ -117,6 +119,7 @@ class DozatCharModel(CharModel):
     self.size = hidden_size * 2 if bi else hidden_size
 
     self.attention_weights = nn.Parameter(data=torch.Tensor(1, self.size), requires_grad=True)
+    self.attention_dropout = nn.Dropout(p=dropout_p)
     self.init_parameter()
     self.linear = nn.Linear(self.size * 2, output_dim, bias=False)
 
@@ -145,19 +148,20 @@ class DozatCharModel(CharModel):
     # get final layer cell states
     cell_state, cell_lengths = pad_packed_sequence(all_cell[-1])
     cell_state = torch.transpose(cell_state, 1, 0)  # (bsz, time, dim)
+    dim = cell_state.size(2)
+    indices = lengths.view(-1, 1).unsqueeze(2).repeat(1, 1, dim) - 1
+    indices = indices.cuda() if torch.cuda.is_available() else indices
+    final_cell_states = torch.squeeze(torch.gather(cell_state, 1, indices), dim=1)
 
-    # attention # TODO: add dropout on attention connections (Dozat)
-    attention_scores = torch.bmm(output, torch.unsqueeze(self.attention_weights.repeat(output.size(0), 1), dim=2))
+    # attention
+    dropped_weights = torch.unsqueeze(self.attention_weights, dim=2)  # TODO dropout on attention weights
+
+    attention_scores = torch.matmul(output, dropped_weights)
     mask = (char_input_no_pad == self.padding_idx)
     attention_scores.data.masked_fill_(torch.unsqueeze(mask, dim=2), -float('inf'))
     attention = F.softmax(attention_scores, dim=1)
 
     h_hat = torch.bmm(torch.transpose(output, 2, 1), attention)
-    # TODO: make memory efficient
-    dim = cell_state.size(2)
-    indices = lengths.view(-1, 1).unsqueeze(2).repeat(1, 1, dim) - 1
-    indices = indices.cuda()if torch.cuda.is_available() else indices
-    final_cell_states = torch.squeeze(torch.gather(cell_state, 1, indices), dim=1)
     v_hat = self.linear(torch.squeeze(torch.cat((h_hat, torch.unsqueeze(final_cell_states, dim=2)), dim=1)))
 
     return v_hat

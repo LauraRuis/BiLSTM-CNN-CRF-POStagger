@@ -46,7 +46,7 @@ def main():
 
   # dropout
   ap.add_argument('--dropout_p', type=float, default=0.5)
-  ap.add_argument('--var_drop', type=bool, default=False)
+  ap.add_argument('--var_drop', dest='var_drop', default=False, action='store_true')
   ap.add_argument('--clip', type=float, default=5.)
 
   # optimizer
@@ -63,6 +63,8 @@ def main():
   # others
   ap.add_argument('--seed', type=int, default=42)
   ap.add_argument('--resume',  type=str, default='')
+  ap.add_argument('--dozat_config', dest='dozat_config', default=False, action='store_true')
+  ap.add_argument('--upos_pred', dest='upos_pred', default=False, action='store_true')
 
   cfg = vars(ap.parse_args())
 
@@ -74,9 +76,23 @@ def main():
 
   if cfg["dataset"] == "conllu":
     print("Changing data paths to CONLLU paths...")
-    cfg["train_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-train.conllu'
-    cfg["dev_path"] = '../data/ud/UD_English-wst/2018/gold/en_ewt-ud-dev_nocomments.txt'
-    cfg["test_path"] = '../data/ud/UD_English-wst/2017/gold/en-ud-test-gold_nocomments.txt'
+    cfg["train_path"] = 'data/ud/UD_English-wst/2017/gold/en_ewt-ud-train.conllu'
+    cfg["dev_path"] = 'data/ud/UD_English-wst/2017/tagged/en-ud-dev.conllu'
+    cfg["test_path"] = 'data/ud/UD_English-wst/2017/gold/en-ud-test-gold_nocomments.txt'
+  if cfg["upos_pred"]:
+    assert cfg["tagger"] == "mlp", "upos prediction only implemented for MLP pos tagger (not for CRF or linear)"
+
+  if cfg["dozat_config"]:
+    print("Configuring to Dozat's settings...")
+    cfg["char_model"] = "dozat"
+    cfg["var_drop"] = True
+    cfg["num_layers"] = 2
+    cfg["dropout_p"] = 0.33
+    cfg["optimizer"] = "adam"
+    cfg["lr"] = 2e-3
+    cfg["char_emb_dim"] = 100
+    cfg["upos_pred"] = True
+    cfg["tagger"] = "mlp"
 
   print("Config:")
   for k, v in cfg.items():

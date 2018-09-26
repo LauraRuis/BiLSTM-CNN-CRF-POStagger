@@ -27,7 +27,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
           char_model=None, tagger=None,
           batch_size=5000,
           n_iters=10, dropout_p=0.33, num_layers=1,
-          print_every=1, eval_every=100, bi=True, var_drop=False,
+          print_every=1, eval_every=100, bi=True, var_drop=False, upos_pred=False,
           lr=0.001, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0., plateau=False,
           resume=False, lr_decay=1.0, lr_decay_steps=5000, clip=5., momentum=0,
           optimizer='adam', glove=True, seed=42, dim=0, window_size=0, num_filters=0, **kwargs):
@@ -46,10 +46,12 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   if dataset == "conllx":
     dataset_obj = ConllXDataset
     fields = get_data_fields()
+    _upos = None
     ud = False
   elif dataset == "conllu":
     dataset_obj = ConllUDataset
     fields = get_data_fields_conllu()
+    _upos = fields['upos'][-1]
     ud = True
   else:
     raise NotImplementedError()
@@ -63,8 +65,11 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   test_dataset = dataset_obj(test_path, fields)
 
   logger.info("Loaded %d train examples" % len(train_dataset))
+  logger.info("Number of train tokens: %d" % train_dataset.n_tokens)
   logger.info("Loaded %d dev examples" % len(dev_dataset))
+  logger.info("Number of train tokens: %d" % dev_dataset.n_tokens)
   logger.info("Loaded %d test examples" % len(test_dataset))
+  logger.info("Number of train tokens: %d" % test_dataset.n_tokens)
 
   form_vocab_path = os.path.join(output_dir, 'vocab.form.pth.tar')
   pos_vocab_path = os.path.join(output_dir, 'vocab.pos.pth.tar')
@@ -106,6 +111,8 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
       _form.build_vocab(train_dataset, min_freq=2)
 
     _pos.build_vocab(train_dataset)
+    if ud:
+        _upos.build_vocab(train_dataset)
     _chars.build_vocab(train_dataset)
 
     # save vocabularies
@@ -122,9 +129,15 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   print("First 10 vocabulary entries, words: ", " ".join(_form.vocab.itos[:10]))
   print("First 10 vocabulary entries, pos tags: ", " ".join(_pos.vocab.itos[:10]))
   print("First 10 vocabulary entries, chars: ", " ".join(_chars.vocab.itos[:10]))
+  if upos_pred:
+    print("First 10 vocabulary entries, upos tags: ", " ".join(_upos.vocab.itos[:10]))
 
   n_words = len(_form.vocab)
   n_tags = len(_pos.vocab)
+  if upos_pred:
+    n_utags = len(_upos.vocab)
+  else:
+    n_utags = 0
   n_chars = len(_chars.vocab)
 
   def batch_size_fn(new, count, sofar):
@@ -138,15 +151,6 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
                       device=device)
   test_iter = Iterator(test_dataset, 32, train=False, sort_within_batch=True,
                        device=device)
-
-  # uncomment to see what a mini-batch looks like numerically
-  # e.g. some things are being inserted dynamically (ROOT at the start of seq,
-  #   padding items, maybe UNKs..)
-  # batch = next(iter(train_iter))
-  # print("form", batch.form)
-  # print("pos", batch.pos)
-  # print("deprel", batch.deprel)
-  # print("head", batch.head)
 
   # if n_iters or eval_every are negative, we set them to that many
   # number of epochs
@@ -162,9 +166,13 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
     n_iters = -1 * n_iters * iters_per_epoch
 
   # load up the model
-  model = Tagger(n_words=n_words, n_tags=n_tags, n_chars=n_chars,
+  if upos_pred:
+    upos_vocab = _upos.vocab
+  else:
+    upos_vocab = None
+  model = Tagger(n_words=n_words, n_tags=n_tags, n_utags=n_utags, n_chars=n_chars,
                  form_vocab=_form.vocab, char_vocab=_chars.vocab,
-                 pos_vocab=_pos.vocab, **cfg)
+                 pos_vocab=_pos.vocab, upos_vocab=upos_vocab, **cfg)
 
   # set word vectors
   if glove:
@@ -233,7 +241,11 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   upos_var, morph_var = None, None
   for iter_i in range(start_iter, n_iters + 1):
 
-    if not plateau and iter_i % (912344 // batch_size) == 0:
+    if not ud:
+      epoch_done = (train_dataset.n_tokens // batch_size)
+    else:
+      epoch_done = (train_dataset.n_tokens // batch_size)
+    if not plateau and iter_i % epoch_done == 0:  # TODO: fix
       scheduler.step()
     model.train()
 
@@ -241,21 +253,23 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
     form_var, lengths = batch.form
 
     pos_var, pos_lengths = batch.pos
+    if upos_pred:
+      upos_var, _ = batch.upos
+    else:
+      upos_var = None
+
     char_var, sentence_lengths, word_lengths = batch.chars
     lengths = lengths.view(-1).tolist()
 
     result = model(form_var=form_var, char_var=char_var,  pos_var=pos_var,
                    lengths=lengths, word_lengths=word_lengths, pos_lengths=pos_lengths)
 
-    # rows sum to 1
-    # print(torch.exp(output_graph).sum(-1))
+    if upos_pred:
+      targets = dict(pos=batch.pos, upos=batch.upos)
+    else:
+      targets = dict(pos=batch.pos, upos=None)
 
-    # print sizes
-    # print(head_logits.data.cpu().size())
-    targets = dict(pos=batch.pos)
-
-    all_losses = model.get_loss(scores=result,
-                                targets=targets)
+    all_losses = model.get_loss(scores=result, targets=targets)
 
     loss = all_losses['loss']
 
@@ -268,23 +282,32 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
     if iter_i % print_every == 0:
 
       # get scores for this batch
+      upos_predictions = []
       if model.tagger == "linear" or model.tagger == "mlp":
-          pos_predictions = result['output'].max(2)[1]
+          if model.upos_pred:
+            upos_predictions = result['output']['upos'].max(2)[1]
+            pos_predictions = result['output']['xpos'].max(2)[1]
+          else:
+            pos_predictions = result['output']['xpos'].max(2)[1]
       else:
           pos_predictions = result['sequence']
-      predictions = dict(pos=pos_predictions)
-      targets = dict(pos=batch.pos)
 
-      pos_acc = model.get_accuracy(predictions=predictions, targets=targets)
+      predictions = dict(pos=pos_predictions, upos=upos_predictions)
+      if model.upos_pred:
+        targets = dict(pos=batch.pos, upos=batch.upos)
+      else:
+        targets = dict(pos=batch.pos, upos=None)
+
+      pos_acc, upos_acc = model.get_accuracy(predictions=predictions, targets=targets)
 
       if not plateau:
         lr = scheduler.get_lr()[0]
       else:
         lr = [group['lr'] for group in optimizer.param_groups][0]
 
-      fmt = "Iter %08d loss %8.4f pos-acc %5.2f lr %.5f"
+      fmt = "Iter %08d loss %8.4f pos-acc %5.2f upos-acc %5.2f lr %.5f"
 
-      logger.info(fmt % (iter_i, loss, pos_acc, lr))
+      logger.info(fmt % (iter_i, loss, pos_acc, upos_acc, lr))
 
     if iter_i % eval_every == 0:
 
@@ -295,11 +318,11 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
                        dataset_path=dev_path,
                        out_path=dev_out_path)
 
-      _dev_pos_acc = get_pos_acc(dev_path, dev_out_path, ud)
+      _dev_pos_acc, _dev_upos_acc = get_pos_acc(dev_path, dev_out_path, ud)
 
       logger.info("Evaluation dev Iter %08d "
-                  "pos-acc %5.2f" % (
-                    iter_i, _dev_pos_acc))
+                  "pos-acc %5.2f upos-acc %5.2f" % (
+                    iter_i, _dev_pos_acc, _dev_upos_acc))
 
       # parse test set and save to file for official evaluation
       test_out_path = 'test.iter%08d.conll' % iter_i
@@ -307,11 +330,11 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
       predict_and_save(dataset=test_dataset, model=model,
                        dataset_path=test_path,
                        out_path=test_out_path)
-      _test_pos_acc = get_pos_acc(test_path, test_out_path, ud)
+      _test_pos_acc, _test_upos_acc = get_pos_acc(test_path, test_out_path, ud)
 
       logger.info("Evaluation test Iter %08d "
-                  "pos-acc %5.2f" % (
-                    iter_i, _test_pos_acc))
+                  "pos-acc %5.2f upos-acc %5.2f" % (
+                    iter_i, _test_pos_acc, _test_upos_acc))
 
       if plateau:
         scheduler.step(_dev_pos_acc)

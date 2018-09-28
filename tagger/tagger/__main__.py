@@ -52,8 +52,8 @@ def main():
   # optimizer
   ap.add_argument('--optimizer', type=str, default='sgd')
   ap.add_argument('--lr', type=float, default=0.01)
-  ap.add_argument('--lr_decay', type=float, default=0.95)
-  ap.add_argument('--lr_decay_steps', type=float, default=5000)
+  ap.add_argument('--lr_decay', type=float, default=0.75)
+  ap.add_argument('--lr_decay_steps', type=float, default=105000)
   ap.add_argument('--adam_beta1', type=float, default=0.9)
   ap.add_argument('--adam_beta2', type=float, default=0.9)
   ap.add_argument('--weight_decay', type=float, default=0.)
@@ -93,6 +93,11 @@ def main():
     cfg["char_emb_dim"] = 100
     cfg["upos_pred"] = True
     cfg["tagger"] = "mlp"
+    cfg["lr_decay_steps"] = 5000
+    cfg["eval_every"] = 1000
+    cfg["print_every"] = 100
+    cfg["batch_size"] = 5000
+
 
   print("Config:")
   for k, v in cfg.items():

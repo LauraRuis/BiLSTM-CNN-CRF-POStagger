@@ -27,6 +27,7 @@ class LSTM(nn.Module):
     self.bias = bias
     self.batch_first = batch_first
     self.dropout = dropout
+
     self.bidirectional = bidirectional
 
     if enlarge_hidden:
@@ -46,7 +47,7 @@ class LSTM(nn.Module):
       input_size = hidden_size * num_directions if i > 0 else self.input_size
       if i == enlarge_layer:
           input_size += enlarge_size
-      all_fwd_cells.append(VarLSTMCell(input_size, hidden_size, bias=True, dropout=dropout))
+      all_fwd_cells.append(VarLSTMCell(input_size, hidden_size, bias=True, dropout=0.5))  # TODO: fix
 
     all_bwd_cells = []
     if bidirectional:
@@ -54,7 +55,7 @@ class LSTM(nn.Module):
         input_size = hidden_size * num_directions if i > 0 else self.input_size
         if i == enlarge_layer:
             input_size += enlarge_size
-        all_bwd_cells.append(VarLSTMCell(input_size, hidden_size, bias=True, dropout=dropout))
+        all_bwd_cells.append(VarLSTMCell(input_size, hidden_size, bias=True, dropout=0.5))  # TODO: fix
 
     # this registers the parameters of the cells so that they are optimized
     self.fwd_cells = nn.ModuleList(all_fwd_cells)

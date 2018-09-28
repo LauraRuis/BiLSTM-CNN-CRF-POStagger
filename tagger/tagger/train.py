@@ -199,7 +199,7 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
   # learning rate schedulers
   if not plateau:
     scheduler = LambdaLR(optimizer,
-                         lr_lambda=lambda t: lr_decay ** t)
+                         lr_lambda=lambda t: lr_decay**(t/lr_decay_steps))
   else:
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.75, patience=5, min_lr=1e-4)
 
@@ -245,8 +245,10 @@ def train(mode='train', train_path='train.conllx', model='dozat', dataset='conll
       epoch_done = (train_dataset.n_tokens // batch_size)
     else:
       epoch_done = (train_dataset.n_tokens // batch_size)
-    if not plateau and iter_i % epoch_done == 0:  # TODO: fix
-      scheduler.step()
+
+    # if not plateau and iter_i % epoch_done == 0:  # TODO: fix
+    #   scheduler.step()
+    scheduler.step()
     model.train()
 
     batch = next(iter(train_iter))
